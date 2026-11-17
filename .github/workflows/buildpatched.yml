@@ -90,23 +90,31 @@ jobs:
       - uses: levibostian/action-hide-sensitive-inputs@v1
 
       - name: Validate vanilla IPA
+        id: validate-ipa
         if: ${{ inputs.ipa_url != '' }}
         run: |
+          echo "valid=false" >> "$GITHUB_OUTPUT"
           wget "${{ inputs.ipa_url }}" --no-verbose -O ${{ github.workspace }}/spotify.ipa
           file_type=$(file --mime-type -b ${{ github.workspace }}/spotify.ipa)
           if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
-            echo "::error::Not a valid IPA: $file_type"
-            exit 1
+            echo "::warning::Skipping IPA build: downloaded input is not an IPA ($file_type)"
+            exit 0
           fi
+          if ! unzip -tq ${{ github.workspace }}/spotify.ipa >/dev/null ||
+             ! unzip -l ${{ github.workspace }}/spotify.ipa | grep -q 'Payload/Spotify.app/'; then
+            echo "::warning::Skipping IPA build: archive does not contain Payload/Spotify.app"
+            exit 0
+          fi
+          echo "valid=true" >> "$GITHUB_OUTPUT"
 
       - name: Build zxPluginsInject.dylib
-        if: ${{ inputs.ipa_url != '' }}
+        if: ${{ steps.validate-ipa.outputs.valid == 'true' }}
         run: |
           chmod +x Tools/build-zxpi.sh
           Tools/build-zxpi.sh
 
       - name: Fetch OpeninSafariSpotify extension (.appex)
-        if: ${{ inputs.ipa_url != '' }}
+        if: ${{ steps.validate-ipa.outputs.valid == 'true' }}
         run: |
           # "OpeninSafariSpotify" is commonly distributed as OpenSpotifySafariExtension.appex
           EXT_DIR="$RUNNER_TEMP/OpenSpotifySafariExtension"
@@ -117,7 +125,7 @@ jobs:
           echo "OPENSPOTIFY_APPEX=$EXT_SRC" >> $GITHUB_ENV
 
       - name: Inject deb + framework into IPA (cyan)
-        if: ${{ inputs.ipa_url != '' }}
+        if: ${{ steps.validate-ipa.outputs.valid == 'true' }}
         run: |
           mkdir -p Outputs/IPAS
           DEB_EXTRACT="$RUNNER_TEMP/deb-extract"
@@ -144,13 +152,13 @@ jobs:
           echo "OUT_IPA=$OUT" >> $GITHUB_ENV
 
       - name: LC-inject zxPluginsInject (ipapatch)
-        if: ${{ inputs.ipa_url != '' }}
+        if: ${{ steps.validate-ipa.outputs.valid == 'true' }}
         run: |
           ipapatch --input "$OUT_IPA" --inplace --noconfirm \
                    --dylib packages/zxPluginsInject.dylib
 
       - name: Add Pixie download manager (Spotify 9.2.0 only)
-        if: ${{ inputs.ipa_url != '' }}
+        if: ${{ steps.validate-ipa.outputs.valid == 'true' }}
         run: |
           # The download manager lives in the SpotifyAudioProbe.dylib companion, which is only
           # built and bundled by NativeDownloads/tools/build_eevee_9192.py. Without this step the
@@ -173,7 +181,7 @@ jobs:
           echo "Pixie companion bundled: Payload/Spotify.app/Frameworks/SpotifyAudioProbe.dylib"
 
       - name: Inject OpeninSafariSpotify extension into IPA PlugIns
-        if: ${{ inputs.ipa_url != '' }}
+        if: ${{ steps.validate-ipa.outputs.valid == 'true' }}
         run: |
           cd "$(dirname "$OUT_IPA")"
           rm -rf Payload
@@ -188,7 +196,7 @@ jobs:
           rm -rf Payload
 
       - name: Strip Watch app (if any survived)
-        if: ${{ inputs.ipa_url != '' }}
+        if: ${{ steps.validate-ipa.outputs.valid == 'true' }}
         run: |
           cd "$(dirname "$OUT_IPA")"
           rm -rf Payload
@@ -204,13 +212,13 @@ jobs:
           rm -rf Payload
 
       - name: Stage alternate app icons
-        if: ${{ inputs.ipa_url != '' }}
+        if: ${{ steps.validate-ipa.outputs.valid == 'true' }}
         run: |
           chmod +x Tools/alt-icons.sh
           Tools/alt-icons.sh "$OUT_IPA"
 
       - name: Upload IPA artifact
-        if: ${{ inputs.ipa_url != '' && (inputs.upload_method == 'artifacts' || inputs.upload_method == 'both') }}
+        if: ${{ steps.validate-ipa.outputs.valid == 'true' && (inputs.upload_method == 'artifacts' || inputs.upload_method == 'both') }}
         uses: actions/upload-artifact@v4
         with:
           name: EeveeSpotify-IPA
@@ -218,7 +226,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload IPA to filebin.net
-        if: ${{ inputs.ipa_url != '' && (inputs.upload_method == 'filebin' || inputs.upload_method == 'both') }}
+        if: ${{ steps.validate-ipa.outputs.valid == 'true' && (inputs.upload_method == 'filebin' || inputs.upload_method == 'both') }}
         run: |
           BIN="eevee-${{ github.run_id }}-${{ github.run_attempt }}"
           FILENAME=$(basename "$OUT_IPA")
